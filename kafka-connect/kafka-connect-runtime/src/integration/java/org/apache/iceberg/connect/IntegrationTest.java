@@ -19,6 +19,7 @@
 package org.apache.iceberg.connect;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -27,7 +28,11 @@ import java.util.Map;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
+import org.apache.iceberg.Table;
+import org.apache.iceberg.catalog.Namespace;
+import org.apache.iceberg.catalog.SupportsNamespaces;
 import org.apache.iceberg.catalog.TableIdentifier;
+import org.apache.iceberg.exceptions.NoSuchTableException;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
@@ -36,14 +41,34 @@ import org.apache.iceberg.types.Types;
 import org.apache.iceberg.types.Types.LongType;
 import org.apache.iceberg.types.Types.StringType;
 import org.apache.iceberg.types.Types.TimestampType;
+import org.awaitility.Awaitility;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.NullSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 public class IntegrationTest extends IntegrationTestBase {
 
+  private static final String TEST_DB = "testdb2";
   private static final String TEST_TABLE = "foobar";
   private static final TableIdentifier TABLE_IDENTIFIER = TableIdentifier.of(TEST_DB, TEST_TABLE);
+
+  @BeforeEach
+  public void before() {
+    createTopic(testTopic(), TEST_TOPIC_PARTITIONS);
+  catalog().dropTable(TableIdentifier.of(TEST_DB, TEST_TABLE));
+    ((SupportsNamespaces) catalog()).dropNamespace(Namespace.of(TEST_DB));
+    ((SupportsNamespaces) catalog()).createNamespace(Namespace.of(TEST_DB));
+  }
+
+  @AfterEach
+  public void after() {
+//    context().stopConnector(connectorName());
+    deleteTopic(testTopic());
+    catalog().dropTable(TableIdentifier.of(TEST_DB, TEST_TABLE));
+    ((SupportsNamespaces) catalog()).dropNamespace(Namespace.of(TEST_DB));
+  }
 
   @ParameterizedTest
   @NullSource
@@ -66,7 +91,7 @@ public class IntegrationTest extends IntegrationTestBase {
   @NullSource
   @ValueSource(strings = "test_branch")
   public void testIcebergSinkUnpartitionedTable(String branch) {
-    catalog().createTable(TABLE_IDENTIFIER, TestEvent.TEST_SCHEMA);
+//    catalog().createTable(TABLE_IDENTIFIER, TestEvent.TEST_SCHEMA);
 
     boolean useSchema = branch == null; // use a schema for one of the tests
     runTest(branch, useSchema, ImmutableMap.of(), List.of(TABLE_IDENTIFIER));
@@ -153,14 +178,35 @@ public class IntegrationTest extends IntegrationTestBase {
     }
   }
 
-  @Override
-  protected KafkaConnectUtils.Config createConfig(boolean useSchema) {
-    return createCommonConfig(useSchema)
-        .config("iceberg.tables", String.format("%s.%s", TEST_DB, TEST_TABLE));
-  }
+  private void runTest(String branch, boolean useSchema, Map<String, String> extraConfig) {
+    // set offset reset to earliest so we don't miss any test messages
+    KafkaConnectUtils.Config connectorConfig =
+        new KafkaConnectUtils.Config(connectorName())
+            .config("topics", testTopic())
+            .config("connector.class", IcebergSinkConnector.class.getName())
+            .config("tasks.max", 2)
+            .config("consumer.override.auto.offset.reset", "earliest")
+            .config("key.converter", "org.apache.kafka.connect.json.JsonConverter")
+            .config("key.converter.schemas.enable", false)
+            .config("value.converter", "org.apache.kafka.connect.json.JsonConverter")
+            .config("value.converter.schemas.enable", useSchema)
+            .config("iceberg.tables", String.format("%s.%s", TEST_DB, TEST_TABLE))
+            .config("iceberg.control.commit.interval-ms", 1000)
+            .config("iceberg.control.commit.timeout-ms", Integer.MAX_VALUE)
+            .config("iceberg.kafka.bootstrap.servers", "localhost:9092")
+            .config("iceberg.tables.auto-create-enabled", "true")
+            .config("iceberg.kafka.auto.offset.reset", "earliest");
 
-  @Override
-  protected void sendEvents(boolean useSchema) {
+    context().connectorCatalogProperties().forEach(connectorConfig::config);
+
+    if (branch != null) {
+      connectorConfig.config("iceberg.tables.default-commit-branch", branch);
+    }
+
+    extraConfig.forEach(connectorConfig::config);
+
+    connectRunner.configureConnector("test", connectorConfig.getConfig());
+
     TestEvent event1 = new TestEvent(1, "type1", Instant.now(), "hello world!");
 
     Instant threeDaysAgo = Instant.now().minus(Duration.ofDays(3));
@@ -168,10 +214,59 @@ public class IntegrationTest extends IntegrationTestBase {
 
     send(testTopic(), event1, useSchema);
     send(testTopic(), event2, useSchema);
+    flush();
+
+    Awaitility.await()
+        .atMost(Duration.ofSeconds(300))
+        .pollInterval(Duration.ofSeconds(1))
+        .untilAsserted(this::assertSnapshotAdded);
   }
 
-  @Override
-  void dropTables() {
-    catalog().dropTable(TableIdentifier.of(TEST_DB, TEST_TABLE));
+    @Override
+    KafkaConnectUtils.Config createConfig(boolean useSchema) {
+        KafkaConnectUtils.Config connectorConfig =
+                new KafkaConnectUtils.Config(connectorName())
+                        .config("topics", testTopic())
+                        .config("connector.class", IcebergSinkConnector.class.getName())
+                        .config("tasks.max", 2)
+                        .config("consumer.override.auto.offset.reset", "earliest")
+                        .config("key.converter", "org.apache.kafka.connect.json.JsonConverter")
+                        .config("key.converter.schemas.enable", false)
+                        .config("value.converter", "org.apache.kafka.connect.json.JsonConverter")
+                        .config("value.converter.schemas.enable", useSchema)
+                        .config("iceberg.tables", String.format("%s.%s", TEST_DB, TEST_TABLE))
+                        .config("iceberg.control.commit.interval-ms", 1000)
+                        .config("iceberg.control.commit.timeout-ms", Integer.MAX_VALUE)
+                        .config("iceberg.kafka.bootstrap.servers", "localhost:9092")
+                        .config("iceberg.tables.auto-create-enabled", "true")
+                        .config("iceberg.kafka.auto.offset.reset", "earliest");
+
+        return connectorConfig;
+    }
+
+    @Override
+    protected void sendEvents(boolean useSchema) {
+        TestEvent event1 = new TestEvent(1, "type1", Instant.now(), "hello world!");
+
+        Instant threeDaysAgo = Instant.now().minus(Duration.ofDays(3));
+        TestEvent event2 = new TestEvent(2, "type2", threeDaysAgo, "having fun?");
+
+        send(testTopic(), event1, useSchema);
+        send(testTopic(), event2, useSchema);
+    }
+
+  private void assertSnapshotAdded() {
+    try {
+      Table table = catalog().loadTable(TABLE_IDENTIFIER);
+      assertThat(table.snapshots()).hasSize(1);
+    } catch (NoSuchTableException e) {
+      fail("Table should exist");
+    }
   }
+
+    @Override
+    void dropTables() {
+        catalog().dropTable(TableIdentifier.of(TEST_DB, TEST_TABLE));
+    }
+
 }

@@ -21,6 +21,9 @@ package org.apache.iceberg.connect;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
 
+import java.io.File;
+import java.io.IOException;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -52,6 +55,7 @@ import org.junit.jupiter.api.BeforeEach;
 public abstract class IntegrationTestBase {
 
   private static TestContext context;
+  private static Path pluginDir;
 
   private Catalog catalog;
   private Admin admin;
@@ -61,13 +65,14 @@ public abstract class IntegrationTestBase {
   private KafkaProducer<String, String> producer;
 
   protected static final int TEST_TOPIC_PARTITIONS = 2;
-  protected static final String TEST_DB = "test";
+  protected ConnectRunner connectRunner;
+    protected static final String TEST_DB = "test";
 
-  abstract KafkaConnectUtils.Config createConfig(boolean useSchema);
+    abstract KafkaConnectUtils.Config createConfig(boolean useSchema);
 
-  abstract void sendEvents(boolean useSchema);
+    abstract void sendEvents(boolean useSchema);
 
-  abstract void dropTables();
+    abstract void dropTables();
 
   protected TestContext context() {
     return context;
@@ -86,27 +91,54 @@ public abstract class IntegrationTestBase {
   }
 
   @BeforeAll
-  public static void baseBeforeAll() {
+  public static void baseBeforeAll() throws IOException, InterruptedException {
+    pluginDir = getPluginDir();
+
     context = TestContext.instance();
   }
 
   @BeforeEach
   public void baseBefore() {
+    System.setProperty("javax.net.debug", "ssl");
     this.catalog = context.initLocalCatalog();
+    this.connectRunner = new ConnectRunner(500, pluginDir);
+    connectRunner.startConnectCluster("test", 29002, 9092);
     this.producer = context.initLocalProducer();
     this.admin = context.initLocalAdmin();
+    createTopic("control-iceberg", 2);
     this.connectorName = "test_connector-" + UUID.randomUUID();
     this.testTopic = "test-topic-" + UUID.randomUUID();
-    createTopic(testTopic(), TEST_TOPIC_PARTITIONS);
-    ((SupportsNamespaces) catalog()).createNamespace(Namespace.of(TEST_DB));
+//    createTopic(testTopic(), TEST_TOPIC_PARTITIONS);
+//    ((SupportsNamespaces) catalog()).createNamespace(Namespace.of(TEST_DB));
+  }
+  public static String PLUGINS_S3_SOURCE_CONNECTOR_FOR_APACHE_KAFKA = "plugins/iceberg-sink-connector-for-apache-kafka/";
+  public static String S3_SOURCE_CONNECTOR_FOR_APACHE_KAFKA_TEST = "/tmp/iceberg-sink-connector-for-apache-kafka-test-";
+
+
+  static Path getPluginDir() throws IOException {
+    final Path testDir =Path.of(S3_SOURCE_CONNECTOR_FOR_APACHE_KAFKA_TEST);
+    return testDir.resolve(PLUGINS_S3_SOURCE_CONNECTOR_FOR_APACHE_KAFKA);
+  }
+
+  static void extractConnectorPlugin(Path pluginDir) throws IOException, InterruptedException {
+    final File distFile = new File("build/distributions/iceberg-kafka-connect-runtime-1.7.0.zip");
+    assertThat(distFile).exists();
+
+    final String cmd = String.format("unzip -x %s -d %s", distFile, pluginDir.toString());
+    Process process = Runtime.getRuntime().exec(cmd);
+    assertThat(process.waitFor()).isZero();
+//    final File lib = new File("build/distributions/commons-configuration2-2.11.0.jar");
+//    assertThat(lib).exists();
+//    process = Runtime.getRuntime().exec(String.format("cp %s %s", lib, pluginDir.resolve("iceberg-kafka-connect-runtime-1.7.0").resolve("lib").toString()));
+//    assertThat(process.waitFor()).isZero();
   }
 
   @AfterEach
   public void baseAfter() {
-    context().stopConnector(connectorName());
-    deleteTopic(testTopic());
-    dropTables();
-    ((SupportsNamespaces) catalog()).dropNamespace(Namespace.of(TEST_DB));
+//    context().stopConnector(connectorName());
+//    deleteTopic(testTopic());
+//    dropTables();
+//    ((SupportsNamespaces) catalog()).dropNamespace(Namespace.of(TEST_DB));
     try {
       if (catalog instanceof AutoCloseable) {
         ((AutoCloseable) catalog).close();
@@ -114,8 +146,10 @@ public abstract class IntegrationTestBase {
     } catch (Exception e) {
       throw new RuntimeException(e);
     }
+    deleteTopic("control-iceberg");
     producer.close();
     admin.close();
+    connectRunner.stopConnectCluster();
   }
 
   protected void assertSnapshotProps(TableIdentifier tableIdentifier, String branch) {
@@ -209,7 +243,7 @@ public abstract class IntegrationTestBase {
 
     extraConfig.forEach(connectorConfig::config);
 
-    context().startConnector(connectorConfig);
+    connectRunner.configureConnector("test", connectorConfig.getConfig());
 
     sendEvents(useSchema);
     flush();

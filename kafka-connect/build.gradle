@@ -175,6 +175,22 @@ project(':iceberg-kafka-connect:iceberg-kafka-connect-runtime') {
     integrationImplementation libs.kafka.clients
     integrationImplementation libs.kafka.connect.api
     integrationImplementation libs.kafka.connect.json
+    integrationImplementation(variantOf(libs.kafka.clients){classifier("test")})
+    integrationImplementation(libs.kafka.connect.runtime)
+    integrationImplementation(libs.commons.configuration)
+    integrationImplementation(libs.hadoop3.auth)
+//    integrationImplementation(libs.hadoop3.aws)
+//    integrationImplementation(libs.hadoop3.mapreduce.client)
+//    integrationImplementation(libs.s3.catalog.runtime)
+//    integrationImplementation(libs.s3.catalog)
+    integrationImplementation(variantOf(libs.kafka.server.common) { classifier("test")})
+    integrationImplementation(variantOf(libs.kafka.connect.runtime)  {
+        classifier("test")
+    })
+    integrationImplementation(libs.kafka.core)
+    integrationImplementation(variantOf(libs.kafka.core)  {
+      classifier("test")
+    })
     integrationImplementation libs.testcontainers
     integrationImplementation libs.httpcomponents.httpclient5
     integrationImplementation libs.awaitility

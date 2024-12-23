@@ -44,7 +44,7 @@ public class KafkaConnectUtils {
   public static class Config {
 
     private final String name;
-    private final Map<String, Object> config = Maps.newHashMap();
+    private final Map<String, String> config = Maps.newHashMap();
 
     public Config(String name) {
       this.name = name;
@@ -54,12 +54,12 @@ public class KafkaConnectUtils {
       return name;
     }
 
-    public Map<String, Object> getConfig() {
+    public Map<String, String> getConfig() {
       return config;
     }
 
     public Config config(String key, Object value) {
-      config.put(key, value);
+      config.put(key, String.valueOf(value));
       return this;
     }
   }
